@@ -8,6 +8,10 @@ from ai_pipeline.llm.client import (
     ResilientLLMClient,
 )
 from ai_pipeline.llm.schemas import ExtractionResult
+from ai_pipeline.llm.evidence import (
+    EvidenceValidationError,
+    validate_evidence,
+)
 
 
 SYSTEM_PROMPT = """
@@ -122,17 +126,40 @@ class StructuredExtractor:
                 "LLM returned invalid structured data"
             ) from exc
 
-        # Check that quoted evidence exists in the supplied text.
-        for item in result.evidence:
-            if item.quote not in text:
-                raise LLMResponseError(
-                    "LLM evidence quote not found in source text"
+        # Validate evidence against the original source.
+        if result.entity_type != "unknown":
+            try:
+                validate_evidence(
+                    evidence=[
+                        item.model_dump()
+                        for item in result.evidence
+                    ],
+                    source_text=text,
+                    source_url=source_url,
                 )
 
-            if item.source_url != source_url:
+            except EvidenceValidationError as exc:
                 raise LLMResponseError(
-                    "LLM evidence source URL mismatch"
+                    f"Evidence validation failed: {exc}"
+                ) from exc
+
+        elif result.evidence:
+            # Unknown entities may have no evidence, but any
+            # evidence supplied must still be valid.
+            try:
+                validate_evidence(
+                    evidence=[
+                        item.model_dump()
+                        for item in result.evidence
+                    ],
+                    source_text=text,
+                    source_url=source_url,
                 )
+
+            except EvidenceValidationError as exc:
+                raise LLMResponseError(
+                    f"Evidence validation failed: {exc}"
+                ) from exc
 
         # All results remain subject to review.
         result.needs_review = True

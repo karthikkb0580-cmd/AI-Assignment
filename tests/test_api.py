@@ -16,7 +16,6 @@ def test_home():
         "AI Intelligence Pipeline"
     )
 
-
 def test_health():
 
     response = client.get("/health")

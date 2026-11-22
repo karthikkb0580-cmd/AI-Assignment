@@ -542,4 +542,90 @@ class StartupVerificationRecord(Base):
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
-    
+
+    import uuid
+from datetime import datetime, timezone
+
+from sqlalchemy import (
+    DateTime,
+    ForeignKey,
+    Integer,
+    JSON,
+    String,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.orm import Mapped, mapped_column
+
+
+class ExtractionRecord(Base):
+    __tablename__ = "extraction_results"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "source_record_id",
+            "content_hash",
+            "extractor_version",
+            name="uq_extraction_source_hash_version",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    source_record_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey(
+            "source_records.id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+        index=True,
+    )
+
+    content_hash: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+    )
+
+    extractor_version: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="v1",
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+        default="pending",
+    )
+
+    extracted_data: Mapped[dict | None] = mapped_column(
+        JSON,
+        nullable=True,
+    )
+
+    error_message: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    attempt_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )

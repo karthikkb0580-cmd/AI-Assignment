@@ -6,8 +6,9 @@ from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from ai_pipeline.config import settings
-from ai_pipeline.database.models import Base
+
 import ai_pipeline.database.models
+from ai_pipeline.database.models import Base
 
 target_metadata = Base.metadata
 config = context.config

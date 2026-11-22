@@ -1,7 +1,13 @@
 import asyncio
+import logging
 import random
+from email.utils import parsedate_to_datetime
+from datetime import datetime, timezone
 
 import httpx
+
+
+logger = logging.getLogger(__name__)
 
 
 class LLMError(Exception):
@@ -33,6 +39,15 @@ class ResilientLLMClient:
         if not base_url.startswith("https://"):
             raise ValueError("LLM base_url must use HTTPS")
 
+        if not api_key:
+            raise ValueError("LLM API key is required")
+
+        if not model:
+            raise ValueError("LLM model is required")
+
+        if max_retries < 0:
+            raise ValueError("max_retries cannot be negative")
+
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -44,6 +59,22 @@ class ResilientLLMClient:
         self,
         messages: list[dict],
     ) -> str:
+        """
+        Send messages to the LLM.
+
+        Automatically retries:
+        - HTTP 429
+        - HTTP 500
+        - HTTP 502
+        - HTTP 503
+        - HTTP 504
+        - Network errors
+        - Timeouts
+
+        HTTP 413 raises LLMContextLengthError so the
+        extraction layer can split the input.
+        """
+
         endpoint = f"{self.base_url}/chat/completions"
 
         payload = {
@@ -58,8 +89,17 @@ class ResilientLLMClient:
         }
 
         async def send(client: httpx.AsyncClient) -> str:
+
             for attempt in range(self.max_retries + 1):
+
                 try:
+                    logger.info(
+                        "Sending LLM request | model=%s | attempt=%s/%s",
+                        self.model,
+                        attempt + 1,
+                        self.max_retries + 1,
+                    )
+
                     response = await client.post(
                         endpoint,
                         json=payload,
@@ -70,50 +110,104 @@ class ResilientLLMClient:
                     httpx.TimeoutException,
                     httpx.NetworkError,
                 ) as exc:
+
                     if attempt >= self.max_retries:
                         raise LLMResponseError(
                             "LLM network retries exhausted"
                         ) from exc
 
-                    await self._backoff(attempt)
-                    continue
+                    delay = self.calculate_retry_delay(attempt)
 
-                if response.status_code == 413:
-                    raise LLMContextLengthError(
-                        "LLM request exceeded provider limit"
+                    logger.warning(
+                        "LLM network error: %s. "
+                        "Retrying in %.2f seconds.",
+                        type(exc).__name__,
+                        delay,
                     )
 
-                if response.status_code == 429:
+                    await asyncio.sleep(delay)
+                    continue
+
+                status_code = response.status_code
+
+                # Request is too large
+                if status_code == 413:
+                    raise LLMContextLengthError(
+                        "LLM request exceeded provider context limit"
+                    )
+
+                # Rate limiting
+                if status_code == 429:
+
                     if attempt >= self.max_retries:
                         raise LLMRateLimitError(
                             "LLM rate limit retries exhausted"
                         )
 
-                    await self._backoff(attempt)
-                    continue
-
-                if response.status_code in {
-                    500, 502, 503, 504
-                }:
-                    if attempt >= self.max_retries:
-                        raise LLMResponseError(
-                            f"Provider unavailable: {response.status_code}"
-                        )
-
-                    await self._backoff(attempt)
-                    continue
-
-                if response.status_code >= 400:
-                    raise LLMResponseError(
-                        f"LLM request failed: HTTP {response.status_code}"
+                    delay = self.get_retry_delay(
+                        response,
+                        attempt,
                     )
 
+                    logger.warning(
+                        "LLM rate limited (429). "
+                        "Retrying in %.2f seconds.",
+                        delay,
+                    )
+
+                    await asyncio.sleep(delay)
+                    continue
+
+                # Temporary provider failures
+                if status_code in {500, 502, 503, 504}:
+
+                    if attempt >= self.max_retries:
+                        raise LLMResponseError(
+                            f"LLM provider unavailable after "
+                            f"{self.max_retries + 1} attempts: "
+                            f"HTTP {status_code}"
+                        )
+
+                    delay = self.get_retry_delay(
+                        response,
+                        attempt,
+                    )
+
+                    logger.warning(
+                        "LLM temporary failure HTTP %s. "
+                        "Retrying in %.2f seconds.",
+                        status_code,
+                        delay,
+                    )
+
+                    await asyncio.sleep(delay)
+                    continue
+
+                # Non-retryable HTTP errors
+                if status_code >= 400:
+
+                    error_detail = response.text[:500]
+
+                    raise LLMResponseError(
+                        f"LLM request failed: HTTP {status_code}. "
+                        f"Details: {error_detail}"
+                    )
+
+                # Successful HTTP response
                 try:
                     data = response.json()
+
                     content = data["choices"][0]["message"]["content"]
 
                     if not isinstance(content, str):
-                        raise ValueError("Content is not a string")
+                        raise ValueError(
+                            "LLM response content is not a string"
+                        )
+
+                    logger.info(
+                        "LLM request successful | model=%s",
+                        self.model,
+                    )
 
                     return content
 
@@ -123,15 +217,20 @@ class ResilientLLMClient:
                     IndexError,
                     TypeError,
                 ) as exc:
+
                     raise LLMResponseError(
                         "Invalid LLM response structure"
                     ) from exc
 
-            raise LLMResponseError("Retries exhausted")
+            raise LLMResponseError(
+                "LLM retries exhausted"
+            )
 
+        # Use injected HTTP client for testing
         if self._http_client is not None:
             return await send(self._http_client)
 
+        # Create HTTP client for normal operation
         async with httpx.AsyncClient(
             timeout=self.timeout,
             trust_env=False,
@@ -139,9 +238,71 @@ class ResilientLLMClient:
             return await send(client)
 
     @staticmethod
-    async def _backoff(attempt: int) -> None:
-        delay = min(
-            2 ** attempt + random.uniform(0, 0.5),
-            30,
+    def calculate_retry_delay(
+        attempt: int,
+        base_delay: float = 2.0,
+        max_delay: float = 60.0,
+    ) -> float:
+        """
+        Exponential backoff with jitter.
+
+        Example approximate delays:
+        Attempt 1: 2 seconds
+        Attempt 2: 4 seconds
+        Attempt 3: 8 seconds
+        Attempt 4: 16 seconds
+        """
+
+        exponential_delay = min(
+            base_delay * (2 ** attempt),
+            max_delay,
         )
-        await asyncio.sleep(delay)
+
+        jitter = random.uniform(
+            0,
+            exponential_delay * 0.25,
+        )
+
+        return exponential_delay + jitter
+
+    @classmethod
+    def get_retry_delay(
+        cls,
+        response: httpx.Response,
+        attempt: int,
+    ) -> float:
+        """
+        Respect Retry-After when provided.
+
+        Otherwise use exponential backoff.
+        """
+
+        retry_after = response.headers.get("Retry-After")
+
+        if retry_after:
+
+            try:
+                return max(0.0, float(retry_after))
+
+            except ValueError:
+                try:
+                    retry_date = parsedate_to_datetime(
+                        retry_after
+                    )
+
+                    if retry_date.tzinfo is None:
+                        retry_date = retry_date.replace(
+                            tzinfo=timezone.utc
+                        )
+
+                    delay = (
+                        retry_date
+                        - datetime.now(timezone.utc)
+                    ).total_seconds()
+
+                    return max(0.0, delay)
+
+                except (ValueError, TypeError, OverflowError):
+                    pass
+
+        return cls.calculate_retry_delay(attempt)
