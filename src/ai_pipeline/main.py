@@ -1,29 +1,48 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 from ai_pipeline.config import settings
+from ai_pipeline.database.connection import AsyncSessionLocal
 
 
 app = FastAPI(
     title=settings.APP_NAME,
     description="AI Intelligence Data Ingestion Pipeline",
-    version="1.0.0"
+    version="1.0.0",
 )
 
 
 @app.get("/")
 async def root():
-
     return {
         "application": settings.APP_NAME,
         "version": "1.0.0",
-        "message": "AI Intelligence Pipeline is running"
+        "message": "AI Intelligence Pipeline is running",
     }
 
 
 @app.get("/health")
 async def health():
-
     return {
         "status": "healthy",
-        "service": "api"
+        "service": "api",
     }
+
+
+@app.get("/health/database")
+async def database_health():
+    try:
+        async with AsyncSessionLocal() as session:
+            await session.execute(text("SELECT 1"))
+
+        return {
+            "status": "healthy",
+            "database": "postgresql",
+        }
+
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=503,
+            detail="Database unavailable",
+        )

@@ -14,8 +14,11 @@ COPY src/ ./src/
 
 RUN pip install --no-cache-dir --no-deps -e .
 
-RUN useradd --create-home --uid 10001 appuser
+COPY alembic.ini ./alembic.ini
+COPY alembic/ ./alembic/
 
+RUN useradd --create-home --uid 10001 appuser
+COPY scripts/ ./scripts/
 USER appuser
 
 EXPOSE 8000
