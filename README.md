@@ -327,7 +327,7 @@ AI-Intelligence-Pipeline/
 |
 |-- tests/
 |
-|-- docker-compose.yml
+|-- compose.yaml
 |-- pyproject.toml
 |-- README.md
 `-- .gitignore
