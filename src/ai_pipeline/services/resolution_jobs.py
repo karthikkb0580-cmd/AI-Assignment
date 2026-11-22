@@ -28,7 +28,12 @@ async def create_missing_jobs(session: AsyncSession) -> int:
             literal(now),
             literal(now),
         )
-        .where(ExtractionRecord.status == "completed")
+        .where(
+    ExtractionRecord.status == "completed",
+    ExtractionRecord.extractor_version == "llm-v1",
+    ExtractionRecord.extracted_data.is_not(None),
+    ExtractionRecord.extracted_data["mock"].as_boolean().is_distinct_from(True),
+)
     )
     statement = (
         insert(ResolutionJob)
@@ -54,8 +59,11 @@ async def process_resolution_jobs(session: AsyncSession, batch_size: int = 100) 
         .join(ExtractionRecord, ResolutionJob.extraction_id == ExtractionRecord.id)
         .join(SourceRecord, ExtractionRecord.source_record_id == SourceRecord.id)
         .where(
-            ExtractionRecord.status == "completed",
-            or_(
+    ExtractionRecord.status == "completed",
+    ExtractionRecord.extractor_version == "llm-v1",
+    ExtractionRecord.extracted_data.is_not(None),
+    ExtractionRecord.extracted_data["mock"].as_boolean().is_distinct_from(True),
+    or_(
                 ResolutionJob.status == "pending",
                 and_(
                     ResolutionJob.status == "retry",

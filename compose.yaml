@@ -78,6 +78,30 @@ services:
       timeout: 5s
       retries: 5
 
+  # Step 13.6 — Continuous Resolution Worker
+  resolution-worker:
+    build: .
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    command:
+      - python
+      - -u
+      - scripts/run_continuous_resolution.py
+      - --batch-size
+      - "100"
+      - --poll-interval
+      - "10"
+
+    depends_on:
+      db:
+        condition: service_healthy
+
+      migrate:
+        condition: service_completed_successfully
+
 volumes:
   postgres_data:
   redis_data:

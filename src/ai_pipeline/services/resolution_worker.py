@@ -17,7 +17,6 @@ class WorkerStats:
 
 
 def get_startup_name(data: dict) -> str | None:
-    """Extract a startup name from validated extraction JSON."""
 
     if not isinstance(data, dict):
         return None
@@ -25,23 +24,41 @@ def get_startup_name(data: dict) -> str | None:
     if data.get("mock") is True:
         return None
 
-    if data.get("entity_type") != "startup":
-        return None
+    if "results" in data:
+        results = data["results"]
 
-    startup = data.get("startup")
+        if not isinstance(results, list):
+            return None
 
-    if not isinstance(startup, dict):
-        return None
+        candidates = results
 
-    name = startup.get("name")
+    else:
+        candidates = [data]
 
-    if not isinstance(name, str):
-        return None
+    for item in candidates:
 
-    name = name.strip()
+        if not isinstance(item, dict):
+            continue
 
-    return name or None
+        if item.get("entity_type") != "startup":
+            continue
 
+        startup = item.get("startup")
+
+        if not isinstance(startup, dict):
+            continue
+
+        name = startup.get("name")
+
+        if not isinstance(name, str):
+            continue
+
+        name = name.strip()
+
+        if name:
+            return name
+
+    return None
 
 async def process_extractions(
     session: AsyncSession,

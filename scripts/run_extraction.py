@@ -4,10 +4,10 @@ import json
 import logging
 import os
 
-from sqlalchemy import select
+from sqlalchemy import exists, or_, select
 
 from ai_pipeline.database.connection import AsyncSessionLocal
-from ai_pipeline.database.models import SourceRecord
+from ai_pipeline.database.models import SourceRecord, ExtractionRecord
 
 from ai_pipeline.llm.client import ResilientLLMClient
 from ai_pipeline.llm.extractor import StructuredExtractor
@@ -17,7 +17,7 @@ from ai_pipeline.services.extraction_storage import (
     save_extraction_success,
     save_extraction_failure,
 )
-
+from ai_pipeline.services.data_quality import validate_extraction
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,6 +31,7 @@ async def run_extraction(
     limit: int = 5,
     mock: bool = False,
     max_attempts: int = 3,
+    source_name: str | None = None,
 ):
     if limit < 1:
         raise ValueError("limit must be greater than zero")
@@ -41,10 +42,11 @@ async def run_extraction(
     extractor_version = "mock-v1" if mock else "llm-v1"
 
     logger.info(
-        "Starting extraction | mode=%s | version=%s | limit=%s",
+        "Starting extraction | mode=%s | version=%s | limit=%s | source=%s",
         "MOCK" if mock else "REAL",
         extractor_version,
         limit,
+        source_name or "ALL",
     )
 
     extractor = None
@@ -74,30 +76,46 @@ async def run_extraction(
 
         extractor = StructuredExtractor(client)
 
-        logger.info("Real LLM extractor initialized")
-
-    else:
-        logger.info("Mock mode enabled")
-
     processed = 0
     skipped = 0
     failed = 0
 
     async with AsyncSessionLocal() as session:
-
-        # Fetch plain column values instead of ORM objects.
-        # This avoids MissingGreenlet after session.rollback().
-        statement = (
-            select(
-                SourceRecord.id,
-                SourceRecord.content_hash,
-                SourceRecord.source_url,
-                SourceRecord.raw_content,
-                SourceRecord.raw_metadata,
-            )
-            .order_by(SourceRecord.id)
-            .limit(limit)
+        statement = select(
+            SourceRecord.id,
+            SourceRecord.content_hash,
+            SourceRecord.source_url,
+            SourceRecord.raw_content,
+            SourceRecord.raw_metadata,
         )
+
+        if source_name:
+            statement = statement.where(
+                SourceRecord.source_name == source_name
+            )
+
+        existing_extraction = (
+            select(ExtractionRecord.id)
+            .where(
+                ExtractionRecord.source_record_id == SourceRecord.id,
+                ExtractionRecord.content_hash == SourceRecord.content_hash,
+                ExtractionRecord.extractor_version == extractor_version,
+            )
+            .correlate(SourceRecord)
+        )
+
+        statement = statement.where(
+            ~exists(
+                existing_extraction.where(
+                    or_(
+                        ExtractionRecord.status == "completed",
+                        ExtractionRecord.attempt_count >= max_attempts,
+                    )
+                )
+            )
+        )
+
+        statement = statement.order_by(SourceRecord.id).limit(limit)
 
         result = await session.execute(statement)
 
@@ -112,10 +130,9 @@ async def run_extraction(
             for row in result.all()
         ]
 
-        logger.info("Found %s source records", len(records))
+        logger.info("Found %s matching source records", len(records))
 
         for record in records:
-
             record_id = record["id"]
             content_hash = record["content_hash"]
             source_url = record["source_url"]
@@ -130,12 +147,10 @@ async def run_extraction(
 
                 if existing and existing.status == "completed":
                     skipped += 1
-
                     logger.info(
                         "Skipping completed record: %s",
                         record_id,
                     )
-
                     continue
 
                 if (
@@ -143,12 +158,10 @@ async def run_extraction(
                     and (existing.attempt_count or 0) >= max_attempts
                 ):
                     skipped += 1
-
                     logger.warning(
                         "Maximum attempts reached: %s",
                         record_id,
                     )
-
                     continue
 
                 source_text = record["raw_content"]
@@ -167,7 +180,6 @@ async def run_extraction(
                         "mock": True,
                         "source_record_id": str(record_id),
                     }
-
                 else:
                     extracted = await extractor.extract(
                         text=source_text,
@@ -183,6 +195,22 @@ async def run_extraction(
                         "mock": False,
                     }
 
+                    quality = validate_extraction(
+                        data=extracted_data,
+                        source_text=source_text,
+                    )
+
+                    if not quality.valid:
+                        raise ValueError(
+                            "Data quality validation failed: "
+                            f"{quality.reason}"
+                        )
+
+                    logger.info(
+                        "Data quality validation passed for record: %s",
+                        record_id,
+                    )
+
                 await save_extraction_success(
                     session=session,
                     source_record_id=record_id,
@@ -192,7 +220,6 @@ async def run_extraction(
                 )
 
                 await session.commit()
-
                 processed += 1
 
                 logger.info(
@@ -201,9 +228,7 @@ async def run_extraction(
                 )
 
             except Exception as exc:
-
                 await session.rollback()
-
                 failed += 1
 
                 logger.exception(
@@ -225,7 +250,6 @@ async def run_extraction(
                     await session.commit()
 
                 except Exception:
-
                     await session.rollback()
 
                     logger.exception(
@@ -242,7 +266,6 @@ async def run_extraction(
 
 
 if __name__ == "__main__":
-
     parser = argparse.ArgumentParser(
         description="AI Intelligence Pipeline Extraction Worker"
     )
@@ -251,7 +274,6 @@ if __name__ == "__main__":
         "--limit",
         type=int,
         default=5,
-        help="Maximum number of source records to examine",
     )
 
     parser.add_argument(
@@ -264,7 +286,13 @@ if __name__ == "__main__":
         "--max-attempts",
         type=int,
         default=3,
-        help="Maximum extraction attempts per record",
+    )
+
+    parser.add_argument(
+        "--source-name",
+        type=str,
+        default=None,
+        help="Only process records from this source",
     )
 
     args = parser.parse_args()
@@ -274,5 +302,6 @@ if __name__ == "__main__":
             limit=args.limit,
             mock=args.mock,
             max_attempts=args.max_attempts,
+            source_name=args.source_name,
         )
     )
