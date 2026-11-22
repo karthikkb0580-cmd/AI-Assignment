@@ -17,6 +17,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+
 def utc_now():
     return datetime.now(timezone.utc)
 
@@ -24,6 +25,10 @@ def utc_now():
 class Base(DeclarativeBase):
     pass
 
+
+# ============================================================
+# STARTUPS
+# ============================================================
 
 class Startup(Base):
     __tablename__ = "startups"
@@ -97,6 +102,10 @@ class Startup(Base):
         ),
     )
 
+
+# ============================================================
+# PRODUCTS
+# ============================================================
 
 class Product(Base):
     __tablename__ = "products"
@@ -173,6 +182,10 @@ class Product(Base):
     )
 
 
+# ============================================================
+# RESEARCH PAPERS
+# ============================================================
+
 class ResearchPaper(Base):
     __tablename__ = "research_papers"
 
@@ -244,6 +257,10 @@ class ResearchPaper(Base):
     )
 
 
+# ============================================================
+# JOBS
+# ============================================================
+
 class Job(Base):
     __tablename__ = "jobs"
 
@@ -312,6 +329,10 @@ class Job(Base):
     )
 
 
+# ============================================================
+# NEWS
+# ============================================================
+
 class News(Base):
     __tablename__ = "news"
 
@@ -362,6 +383,10 @@ class News(Base):
         Index("ix_news_published_at", "published_at"),
     )
 
+
+# ============================================================
+# SOURCE RECORDS
+# ============================================================
 
 class SourceRecord(Base):
     __tablename__ = "source_records"
@@ -428,6 +453,10 @@ class SourceRecord(Base):
     )
 
 
+# ============================================================
+# ENTITY MAPPINGS
+# ============================================================
+
 class EntityMapping(Base):
     __tablename__ = "entity_mappings"
 
@@ -489,22 +518,23 @@ class EntityMapping(Base):
             name="ck_entity_mappings_confidence",
         ),
     )
-    import uuid
-from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String
-from sqlalchemy.orm import Mapped, mapped_column
 
+# ============================================================
+# STARTUP VERIFICATION RESULTS
+# ============================================================
 
 class StartupVerificationRecord(Base):
     __tablename__ = "startup_verification_results"
 
     id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
         primary_key=True,
         default=uuid.uuid4,
     )
 
     source_record_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
         ForeignKey("source_records.id", ondelete="CASCADE"),
         unique=True,
         nullable=False,
@@ -539,24 +569,14 @@ class StartupVerificationRecord(Base):
 
     evaluated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
+        default=utc_now,
         nullable=False,
     )
 
-    import uuid
-from datetime import datetime, timezone
 
-from sqlalchemy import (
-    DateTime,
-    ForeignKey,
-    Integer,
-    JSON,
-    String,
-    Text,
-    UniqueConstraint,
-)
-from sqlalchemy.orm import Mapped, mapped_column
-
+# ============================================================
+# EXTRACTION RESULTS
+# ============================================================
 
 class ExtractionRecord(Base):
     __tablename__ = "extraction_results"
@@ -571,15 +591,14 @@ class ExtractionRecord(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
         primary_key=True,
         default=uuid.uuid4,
     )
 
     source_record_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey(
-            "source_records.id",
-            ondelete="CASCADE",
-        ),
+        UUID(as_uuid=True),
+        ForeignKey("source_records.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -620,12 +639,98 @@ class ExtractionRecord(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
-        default=lambda: datetime.now(timezone.utc),
+        default=utc_now,
     )
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
+        default=utc_now,
+        onupdate=utc_now,
+    )
+
+
+# ============================================================
+# PIPELINE CHECKPOINTS - STEP 13
+# ============================================================
+
+class PipelineCheckpoint(Base):
+    __tablename__ = "pipeline_checkpoints"
+
+    worker_name: Mapped[str] = mapped_column(
+        String(100),
+        primary_key=True,
+    )
+
+    last_created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    last_record_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+        nullable=False,
+    )
+
+
+class ResolutionJob(Base):
+    __tablename__ = "resolution_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    extraction_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("extraction_results.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(30),
+        nullable=False,
+        default="pending",
+    )
+
+    attempt_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+    )
+
+    last_error: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    next_retry_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        nullable=False,
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+        nullable=False,
+    )
+
+    __table_args__ = (
+        Index("ix_resolution_jobs_status_retry", "status", "next_retry_at"),
     )
