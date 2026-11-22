@@ -17,7 +17,6 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-
 def utc_now():
     return datetime.now(timezone.utc)
 
@@ -490,3 +489,57 @@ class EntityMapping(Base):
             name="ck_entity_mappings_confidence",
         ),
     )
+    import uuid
+from datetime import datetime, timezone
+
+from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String
+from sqlalchemy.orm import Mapped, mapped_column
+
+
+class StartupVerificationRecord(Base):
+    __tablename__ = "startup_verification_results"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    source_record_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("source_records.id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False,
+    )
+
+    candidate_name: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+
+    score: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+    )
+
+    reasons: Mapped[list] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+    )
+
+    evidence: Mapped[dict] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+    )
+
+    evaluated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+    

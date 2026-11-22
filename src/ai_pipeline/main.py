@@ -4,6 +4,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from ai_pipeline.config import settings
 from ai_pipeline.database.connection import AsyncSessionLocal
+from ai_pipeline.api.verification import router as verification_router
 
 
 app = FastAPI(
@@ -12,6 +13,7 @@ app = FastAPI(
     version="1.0.0",
 )
 
+app.include_router(verification_router)
 
 @app.get("/")
 async def root():
