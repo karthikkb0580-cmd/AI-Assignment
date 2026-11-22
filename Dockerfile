@@ -11,6 +11,7 @@ COPY pyproject.toml .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY src/ ./src/
+COPY scripts/ ./scripts/
 
 RUN pip install --no-cache-dir --no-deps -e .
 
